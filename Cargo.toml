@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "crates/e4epc-formats",
+    "crates/e4epc-baker",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "BSD-3-Clause"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Pedantic group has many lints that fight numerics/graphics/IPC patterns.
+# We keep pedantic on for the genuinely useful ones and silence the rest:
+module_name_repetitions = "allow"
+missing_panics_doc = "allow"
+missing_errors_doc = "allow"
+# Casts: we know what we're doing in renderer math (f64→f32 for GPU, usize→f64 for divisors).
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+# Style: 3-element loops over fixed axes are clearer with an index.
+needless_range_loop = "allow"
+# Tauri commands take owned args by design.
+needless_pass_by_value = "allow"
+# Doc-markdown is noisy for prose / acronyms (LAZ, kNN, PCA, etc.).
+doc_markdown = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
