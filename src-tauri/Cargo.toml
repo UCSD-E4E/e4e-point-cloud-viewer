@@ -1,0 +1,25 @@
+[package]
+name = "e4epc-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Desktop shell for the E4E point cloud viewer."
+
+[lints]
+workspace = true
+
+[lib]
+name = "e4epc_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+e4epc-baker = { path = "../crates/e4epc-baker" }
+e4epc-formats = { path = "../crates/e4epc-formats" }
