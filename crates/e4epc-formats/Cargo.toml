@@ -1,0 +1,13 @@
+[package]
+name = "e4epc-formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Shared splat / cloud / tile formats for the E4E point cloud viewer."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
