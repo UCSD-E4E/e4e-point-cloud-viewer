@@ -75,78 +75,122 @@ Goal: a user can open a `.laz` file in the desktop app, see it baked, and view i
 
 ---
 
-## v2 — Quest 2 viewer + LAN streaming
+## v2 — Phone PWA + share-via-URL backend
 
-Goal: a Quest 2 user opens the Quest Browser, navigates to the desktop's URL, sees the list of clouds the desktop has baked, picks one, and views it in stereoscopic VR.
+Goal: someone with a phone (no desktop, no app install) views a baked cloud you've shared with them in under 60 seconds. The desktop bakes; a small backend stores and serves; the phone PWA renders. Authentik handles authentication for upload and admin operations; recipients of share URLs don't need accounts.
 
-This release is mostly about the *backbone* (tile format, server, discovery, pairing), with the Quest viewer as the consumer that proves the backbone works.
+### Architecture
 
-### M6 — Tiled octree format
+```
++-------------------+        +-------------------------------+        +-------------------+
+| Desktop (Tauri)   |  POST  | Backend container             |  GET   | Phone PWA         |
+|                   | -----> |  axum + SQLite + blob storage | <----- |  (renderer-only)  |
+| - bake (existing) |        |  - PWA static files           |        |                   |
+| - "Share" button  |        |  - upload  (auth required)    |        |  no auth needed:  |
+| - QR + URL out    |        |  - serve blobs (open by URL)  |        |  the link is the  |
+|                   |        |  - admin portal               |        |  access token     |
++-------------------+        +-------------------------------+        +-------------------+
+        ↑                                  ↓
+        └────── OIDC device flow ── Authentik (institutional IdP) ── OIDC code flow ──→ admin browser
+```
 
-- Split the flat splat buffer from MVP into a Potree-style spatial octree.
-- Each tile = a binary blob of splats, addressable by octree path.
-- Define the on-wire format. Quantize positions (16-bit per axis within the tile bbox), pack colors, pack covariance basis.
-- Rust → WASM decoder for the tile format. Same crate the baker uses to encode.
+One Docker image. One SQLite database (volume-mounted). Blob storage under `/var/clouds` (volume-mounted). PWA, admin portal, and API all served same-origin so no CORS choreography.
 
-### M7 — Local LAN server
+### M6 — Backend skeleton + Docker + ghcr
 
-- Tauri-side `axum` server bound to the LAN interface.
-- Endpoints: list clouds, get cloud metadata (octree root + bbox + transform), get tile by path.
-- HTTPS with a self-signed cert generated per install (Quest Browser will need a one-time trust prompt).
+- New `e4epc-server` crate in the workspace: axum, sqlx (SQLite), tower middleware, tracing.
+- Routes (auth wired in M7):
+  - `GET /` → PWA static bundle
+  - `GET /assets/*`, `GET /admin` → static
+  - `POST /clouds` → write blob to `/var/clouds/<short-id>`, return `{ id, url }`
+  - `GET /clouds/:id` → stream bytes
+- SQLite schema via `sqlx migrate`: `users`, `clouds`, `oauth_state` (CSRF for the OIDC dance).
+- Multi-stage Dockerfile: `node` stage builds the PWA, `rust` stage builds the binary, slim `debian:slim` runtime image. Target final image ≤ 50 MB.
+- GitHub Action: on push to `main`, build + test, push image to `ghcr.io/ucsd-e4e/e4e-point-cloud-viewer:latest` (and `:vX.Y.Z` on tagged releases).
+- Health endpoint, structured logs, request IDs from day one.
 
-### M8 — Discovery and pairing
+### M7 — Authentik OIDC
 
-- mDNS advertisement (`_e4epc._tcp`) via `mdns-sd`.
-- Short-code pairing UI: desktop displays code, device enters it, desktop issues a bearer token.
-- Token revocation UI on the desktop.
+- **Browser (admin portal)** uses the OIDC Authorization Code flow with PKCE: redirect to Authentik, exchange code at the callback, drop a session cookie, store OIDC tokens server-side keyed by session.
+- **Desktop client** uses the OIDC Device Authorization Grant (RFC 8628): desktop calls `/api/auth/device`, gets back a `user_code` + `verification_uri`, displays both to the user, polls for completion. User opens Authentik in any browser, types the code, approves; desktop receives access + refresh tokens and stores them in `tauri-plugin-stronghold` (OS-keychain-backed).
+- User identity comes from Authentik claims (`sub`, `email`, `name`); a lightweight `users` row keyed by `sub` is cached for blob-ownership joins.
+- Role check: a configured Authentik group (e.g. `e4epc-admin`) maps to the admin role; read from the `groups` claim on every request.
+- All write/admin endpoints sit behind an auth middleware that validates the session cookie or bearer access token and attaches the user to the request extension.
 
-### M9 — Quest 2 viewer build
+### M8 — Admin portal
 
-- WebXR session in three.js.
-- Touch-controller input: grip-to-rotate, joystick translate, two-handed pinch scale, B/Y to teleport-to-point.
-- LOD driven by camera distance + per-frame budget; tiles streamed on demand from the server, cached in IndexedDB.
-- Comfort: vignette during translation, snap turn option.
+- Lives at `/admin` in the same PWA bundle (same domain, same auth, same Docker image).
+- Pages:
+  - **Login** — kicks off the OIDC redirect.
+  - **Clouds** — id, owner, original filename, size, uploaded date, last accessed, action: delete.
+  - **Users** — local cache of users we've seen log in, with admin status flagged (read-only — admin assignment lives in Authentik groups).
+  - **My uploads** — clouds list filtered to the current user, available to non-admins too.
+- Delete is hard-delete (row + file). No expiry policy per spec; admins clean up manually.
+- Confirmation prompt on every destructive action.
 
-### M10 — Desktop becomes a server *and* a viewer
+### M9 — PWA build target
 
-- Refactor MVP viewer to consume the same tiled-octree pipeline as the Quest viewer (single render path).
-- Desktop app ships as a Tauri-wrapped instance of the same WebXR-less viewer build, plus the importer / baker / server UI.
+- Introduce `src/cloudSource.ts` abstracting "where do bytes come from":
+  - Tauri runtime → `invoke('bake_cloud', ...)`
+  - Browser runtime → `fetch(urlFromQueryParam)`
+- Single Vite build with runtime detection (`if (window.__TAURI_INTERNALS__)`); tree-shaking removes the unused side from the PWA bundle.
+- All renderer controls (orientation, render modes, sliders, anaglyph) work in either mode.
+- The phone-launched flow (loaded with `?cloud=<id>`) shows only the renderer + a minimal info bar (cloud name, splat count). No file picker, no normalize UI, no bake controls.
+
+### M10 — Desktop "Share" command
+
+- New Tauri command `share_cloud(blob, server_url)` that POSTs to `/clouds` with the user's bearer token, gets back the cloud ID, builds the share URL.
+- Desktop UI: "Share" button under the rendered cloud → uploads → displays the URL + a QR code (`qrcode-rs` to canvas).
+- Share-server URL configurable in app settings; defaults to the production hostname once it exists.
+- "Sign in" button in settings: kicks off the device auth flow, surfaces the user_code, opens the browser to Authentik. Stores tokens in stronghold on success.
+
+### M11 — Phone-friendly UX pass
+
+- Touch gestures tuned for orbit controls (pinch-to-zoom, two-finger pan, one-finger orbit). OrbitControls handles this but defaults need bumping for touch.
+- Mobile layout: collapsed control bar by default, fullscreen button prominent, tap-to-toggle UI overlay, viewport meta tweaks.
+- Service worker for offline-after-first-load — once a phone has loaded a cloud, it can render it again without network.
+- iOS Safari smoke test (different WebGL behavior, different fullscreen permissions).
 
 ---
 
-## v3 — Cardboard
+## v3 — Stereo modes + native Quest
 
-Goal: anyone with an Android phone and a Cardboard housing can view a shared cloud.
+Goal: extend the v2 PWA with comfortable stereo viewing on phones, then a higher-fidelity Quest 2 path.
 
-### M11 — Mobile WebXR target
+### M12 — Stereo modes for phone (Cardboard)
 
-- Same viewer code as v2, with a "Cardboard mode" that uses the WebXR magic-window / inline session and the Cardboard-style stereo split.
-- Lowest LOD bracket by default; aggressive point-budget caps.
-- Gaze + tap input model. No translation — orbit-around-cloud with head movement only (3-DOF).
+- Hand-rolled stereo split renderer alongside the existing anaglyph mode. Two cameras with eye-separation offset, rendered to left/right halves of the canvas. Avoids WebXR (iOS support is too patchy to build on).
+- Head tracking via `DeviceOrientationEvent` (gyro-only, 3-DOF). iOS requires a permission prompt; surface that clearly.
+- Render-mode toggle in the PWA: mono / anaglyph / cardboard-stereo.
+- Comfort tuning: vignette during fast head motion, cap render distance, default to a constrained orbit camera that doesn't translate.
 
-### M12 — Mobile-friendly pairing
+### M13 — Native Quest 2
 
-- QR-on-desktop, scan-with-phone-camera-app, deep-link into the viewer with the pairing token in the URL fragment. No in-app camera access required.
-
-### M13 — Performance pass
-
-- Profile on mid-range Android. Tune tile size, splat count caps, and shader complexity until 60 FPS holds on a representative device.
+- WebXR session via three.js (`renderer.xr.enabled = true`) — Quest Browser supports it cleanly even though iOS doesn't.
+- Touch-controller input: grip-to-rotate, joystick translate, two-handed pinch scale, B/Y to teleport-to-point.
+- Reuses the same PWA shell and same backend; no separate build target initially. If perf doesn't hold, then a native build (Unity, or wgpu native) becomes a v4 conversation.
 
 ---
 
 ## Cross-cutting risks
 
-- **Splat renderer choice (M4).** Library vs. custom shader is the single biggest unknown for MVP feel and v2 reuse. Worth a one-day spike before committing.
-- **Quest Browser HTTPS trust (M7).** The self-signed cert flow may be friction-heavy. Fallback: ship a tiny relay that the Quest connects to via HTTPS while the desktop talks to the relay on LAN. Adds complexity; only do it if the trust prompt is unworkable.
-- **kNN at 10M points (M3).** `kiddo` is fast but may need tuning. If bake time blows past 30s, switch to approximate-NN (e.g., voxel-bucketed neighbor search) which is plenty for normal estimation.
-- **Tile format churn (M6).** Once the format is shipped to a device, changing it forces re-baking and re-streaming. Version the format from day one.
+- **Authentik availability (v2).** All upload + admin functionality depends on Authentik being reachable. Existing share URLs keep working (read is unauthenticated), but new uploads block. Worth a graceful-degradation mode that surfaces this clearly rather than failing opaquely.
+- **Blob storage growth (M8).** No automatic expiry per spec; the admin portal is the cleanup mechanism. Add a periodic disk-usage report on the admin dashboard.
+- **iOS WebGL / fullscreen quirks (M11, M12).** Mobile Safari has historically been the weakest WebGL platform. May need to drop pixel ratio, simplify the shader, or stub out fullscreen on iOS.
+- **PWA service-worker invalidation (M11).** A stale cache on a recipient's phone leaves them stuck on an old build. Need content-hashed asset filenames and a versioned service-worker registration on every release.
+- **Desktop OIDC device-flow UX (M7).** First-time login forces a context switch to a browser. Needs to be quick and unambiguous or users will give up.
+- **kNN at 10M points (M3, retroactive).** `kiddo` has been fine through MVP. If real-world bake times blow past 30 s, swap to approximate-NN (voxel-bucketed neighbor search), which is plenty for normal estimation.
 
-## Open decisions before starting
+## Open decisions
 
-1. **Tauri vs. Electron** — confirm before M0.
-2. **Splat library vs. custom shader** — defer to start of M4, but keep an eye on it.
-3. **Octree partitioning strategy** — Potree's exact scheme, or a simpler regular octree? Defer to M6.
-4. **Recent-files persistence** — Tauri's app-data dir, fine. Just confirming it's in MVP.
+1. **Tauri vs. Electron** — Tauri *(resolved at M0).*
+2. **Splat library vs. custom shader** — custom shader *(resolved at M4).*
+3. **Recent-files persistence** — Tauri app-data dir *(resolved at M5).*
+4. **Tiled octree** — *deferred indefinitely.* The flat splat buffer + share-via-URL covers the elevator-pitch use case. Revisit only if blob sizes outgrow what the backend can comfortably stream.
+5. **Auth provider** — Authentik over OIDC *(resolved before M7).*
+6. **Hosting target** — self-hosted Docker container, image at `ghcr.io/ucsd-e4e/...` *(resolved before M6).*
+7. **Blob expiry** — none; manual cleanup via admin portal *(resolved before M8).*
+8. **Container registry** — GitHub Container Registry *(resolved before M6).*
 
 ## Deferred optimizations
 
