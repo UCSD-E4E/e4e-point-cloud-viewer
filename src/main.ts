@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { AnaglyphMode } from "./anaglyph.ts";
 import { type BakeProgress, type BakeResult, formatBakeResult } from "./bake.ts";
 import { SplatRenderer } from "./renderer.ts";
 import { unpackSplatCloud } from "./splatCloud.ts";
@@ -45,6 +46,7 @@ const saturationSlider = $<HTMLInputElement>("#saturation-slider");
 const saturationValue = $<HTMLSpanElement>("#saturation-value");
 const bgPicker = $<HTMLInputElement>("#bg-picker");
 const anaglyphToggle = $<HTMLInputElement>("#anaglyph-toggle");
+const anaglyphModeSelect = $<HTMLSelectElement>("#anaglyph-mode");
 const recentSection = $<HTMLElement>("#recent-section");
 const recentList = $<HTMLUListElement>("#recent-list");
 
@@ -72,6 +74,10 @@ bgPicker.addEventListener("input", () => {
 
 anaglyphToggle.addEventListener("change", () => {
   splatRenderer.setAnaglyph(anaglyphToggle.checked);
+});
+
+anaglyphModeSelect.addEventListener("change", () => {
+  splatRenderer.setAnaglyphMode(anaglyphModeSelect.value as AnaglyphMode);
 });
 
 void listen<BakeProgress>("bake-progress", (event) => {

@@ -1,7 +1,14 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { AnaglyphEffect } from "three/addons/effects/AnaglyphEffect.js";
+import { type AnaglyphMode, anaglyphMatricesFor } from "./anaglyph.ts";
+import { readOrbitInput } from "./gamepad.ts";
 import { type SplatCloud, bboxOfPositions } from "./splatCloud.ts";
+
+// Keep the camera from flipping at the poles when the right stick is held.
+const POLAR_EPS = 0.001;
+// Cap dt so a stalled tab (e.g. minimized) doesn't fling the camera on resume.
+const MAX_FRAME_DT_SEC = 0.1;
 
 const VERTEX_SHADER = /* glsl */ `
 uniform float uSizeMultiplier;
@@ -52,9 +59,11 @@ export class SplatRenderer {
   private mesh: THREE.InstancedMesh | null = null;
   private material: THREE.ShaderMaterial | null = null;
   private rafHandle = 0;
+  private prevFrameTime = performance.now();
   private sizeMultiplier = 1;
   private saturation = 1;
   private anaglyphOn = false;
+  private anaglyphMode: AnaglyphMode = "half-color";
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -74,6 +83,7 @@ export class SplatRenderer {
     // 5 m-wide normalized scenes — uncomfortable fringing. Drop to ~0.5%
     // of scene width. (Public field in implementation, missing from .d.ts.)
     (this.anaglyph as unknown as { eyeSep: number }).eyeSep = 0.025;
+    this.setAnaglyphMode(this.anaglyphMode);
 
     this.handleResize();
     window.addEventListener("resize", () => this.handleResize());
@@ -82,6 +92,11 @@ export class SplatRenderer {
     new ResizeObserver(() => this.handleResize()).observe(canvas);
 
     const animate = () => {
+      const now = performance.now();
+      const dt = Math.min((now - this.prevFrameTime) / 1000, MAX_FRAME_DT_SEC);
+      this.prevFrameTime = now;
+
+      this.applyGamepadInput(dt);
       this.controls.update();
       if (this.anaglyphOn) {
         this.anaglyph.render(this.scene, this.camera);
@@ -95,6 +110,13 @@ export class SplatRenderer {
 
   setAnaglyph(enabled: boolean): void {
     this.anaglyphOn = enabled;
+  }
+
+  setAnaglyphMode(mode: AnaglyphMode): void {
+    this.anaglyphMode = mode;
+    const { left, right } = anaglyphMatricesFor(mode);
+    this.anaglyph.colorMatrixLeft.fromArray(left);
+    this.anaglyph.colorMatrixRight.fromArray(right);
   }
 
   toggleFullscreen(): void {
@@ -193,6 +215,48 @@ export class SplatRenderer {
   }
 
   private lastCloud: SplatCloud | null = null;
+
+  private applyGamepadInput(dt: number): void {
+    if (typeof navigator === "undefined" || !navigator.getGamepads) return;
+    const pads = navigator.getGamepads();
+    let pad: Gamepad | null = null;
+    for (const p of pads) {
+      if (p) {
+        pad = p;
+        break;
+      }
+    }
+    if (!pad) return;
+
+    const input = readOrbitInput(pad, dt);
+
+    if (input.resetPressed && this.lastCloud) {
+      this.fitCameraToCloud(this.lastCloud);
+      return;
+    }
+
+    // Convert camera-target offset to spherical, mutate, then convert back.
+    // OrbitControls.update() will re-derive its own state from camera.position
+    // on the next call, so direct mutation here composes cleanly with mouse.
+    const offset = new THREE.Vector3().subVectors(this.camera.position, this.controls.target);
+    const sph = new THREE.Spherical().setFromVector3(offset);
+    sph.theta += input.azimuth;
+    sph.phi = Math.max(POLAR_EPS, Math.min(Math.PI - POLAR_EPS, sph.phi + input.polar));
+    sph.radius *= Math.exp(input.dolly);
+    offset.setFromSpherical(sph);
+
+    if (input.panX !== 0 || input.panY !== 0) {
+      const m = this.camera.matrix;
+      const right = new THREE.Vector3().setFromMatrixColumn(m, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(m, 1);
+      const panVec = right
+        .multiplyScalar(input.panX * sph.radius)
+        .add(up.multiplyScalar(input.panY * sph.radius));
+      this.controls.target.add(panVec);
+    }
+
+    this.camera.position.copy(this.controls.target).add(offset);
+  }
 
   private fitCameraToCloud(cloud: SplatCloud): void {
     this.lastCloud = cloud;

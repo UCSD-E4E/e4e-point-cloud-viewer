@@ -83,7 +83,7 @@ struct BakeProgress {
 }
 
 #[tauri::command]
-fn bake_cloud(
+async fn bake_cloud(
     app: AppHandle,
     path: PathBuf,
     summary: Summary,
@@ -96,18 +96,31 @@ fn bake_cloud(
         n = with_z_inverted(n);
     }
 
-    let iter = e4epc_baker::iter_points(&path).map_err(|e| e.to_string())?;
-    let raw = iter
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+    // The bake is CPU-bound (LAZ decode + kNN + per-point PCA). Run it on the
+    // blocking thread pool so the async runtime and the main thread stay free
+    // to dispatch `bake-progress` events to the webview.
+    let bytes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        let iter = e4epc_baker::iter_points(&path).map_err(|e| e.to_string())?;
+        let raw = iter
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
 
-    let app_for_progress = app.clone();
-    let cloud =
-        e4epc_baker::bake_cloud_from_points_with_progress(raw, &n, BAKE_K, move |done, total| {
-            let _ = app_for_progress.emit("bake-progress", BakeProgress { done, total });
-        });
+        let app_for_progress = app.clone();
+        let cloud = e4epc_baker::bake_cloud_from_points_with_progress(
+            raw,
+            &n,
+            BAKE_K,
+            move |done, total| {
+                let _ = app_for_progress.emit("bake-progress", BakeProgress { done, total });
+            },
+        );
 
-    Ok(Response::new(pack_splat_cloud(&cloud)))
+        Ok(pack_splat_cloud(&cloud))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(Response::new(bytes))
 }
 
 pub fn run() {
