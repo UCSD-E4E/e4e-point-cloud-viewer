@@ -261,3 +261,6 @@ src-tauri/gen/
 
 # Baked splat clouds are generated, never committed (see `npm run fixture`).
 *.e4epc
+
+# e4epc-server blob storage (runtime data)
+/clouds/

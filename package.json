@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "fixture": "cargo run -q -p e4epc-baker --example bake -- crates/e4epc-baker/tests/fixtures/autzen_trim.laz public/fixtures/autzen.e4epc",
+    "serve": "cargo run -q -p e4epc-server --",
     "test": "vitest",
     "test:run": "vitest run --passWithNoTests",
     "tauri": "tauri",

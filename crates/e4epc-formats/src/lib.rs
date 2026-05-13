@@ -70,10 +70,14 @@ impl Normalization {
 ///
 /// Every typed-array slice begins on a 4-byte boundary so the JS side can
 /// construct `Float32Array` views without copying.
+///
+/// A packed buffer is exactly `4 + count * PACKED_SPLAT_SIZE` bytes long.
+pub const PACKED_SPLAT_SIZE: usize = 12 /* position */ + 4 /* color */ + 12 /* normal */ + 4 /* radius */;
+
 #[must_use]
 pub fn pack_splat_cloud(cloud: &SplatCloud) -> Vec<u8> {
     let n = cloud.splats.len();
-    let total = 4 + n * 12 + n * 4 + n * 12 + n * 4;
+    let total = 4 + n * PACKED_SPLAT_SIZE;
     let mut out = Vec::with_capacity(total);
     out.extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_le_bytes());
     for s in &cloud.splats {
@@ -93,6 +97,18 @@ pub fn pack_splat_cloud(cloud: &SplatCloud) -> Vec<u8> {
         out.extend_from_slice(&s.radius.to_le_bytes());
     }
     out
+}
+
+/// The splat count from a packed `.e4epc` buffer, but only if the buffer's
+/// length is consistent with that count. Returns `None` for a truncated or
+/// otherwise malformed buffer — a cheap "is this really an `.e4epc`?" gate for
+/// upload endpoints, without decoding the whole thing.
+#[must_use]
+pub fn packed_cloud_splat_count(bytes: &[u8]) -> Option<usize> {
+    let header: [u8; 4] = bytes.get(0..4)?.try_into().ok()?;
+    let n = u32::from_le_bytes(header) as usize;
+    let expected = n.checked_mul(PACKED_SPLAT_SIZE)?.checked_add(4)?;
+    (bytes.len() == expected).then_some(n)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -180,6 +196,46 @@ mod tests {
     fn pack_empty_cloud_is_just_header() {
         let bytes = pack_splat_cloud(&SplatCloud::default());
         assert_eq!(bytes, &[0, 0, 0, 0]);
+    }
+
+    fn sample_cloud(n: usize) -> SplatCloud {
+        SplatCloud {
+            splats: vec![
+                Splat {
+                    position: [1.0, 2.0, 3.0],
+                    color: [10, 20, 30, 255],
+                    normal: [0.0, 0.0, 1.0],
+                    radius: 0.5,
+                };
+                n
+            ],
+            bbox_min: [0.0; 3],
+            bbox_max: [0.0; 3],
+        }
+    }
+
+    #[test]
+    fn packed_cloud_splat_count_reads_a_well_formed_buffer() {
+        for n in [0usize, 1, 2, 1000] {
+            let bytes = pack_splat_cloud(&sample_cloud(n));
+            assert_eq!(packed_cloud_splat_count(&bytes), Some(n));
+        }
+    }
+
+    #[test]
+    fn packed_cloud_splat_count_rejects_a_short_header() {
+        assert_eq!(packed_cloud_splat_count(&[]), None);
+        assert_eq!(packed_cloud_splat_count(&[0, 0, 0]), None);
+    }
+
+    #[test]
+    fn packed_cloud_splat_count_rejects_a_length_mismatch() {
+        let mut bytes = pack_splat_cloud(&sample_cloud(2));
+        bytes.pop(); // truncate one byte
+        assert_eq!(packed_cloud_splat_count(&bytes), None);
+
+        // Header claims 2 splats but the buffer is just the header.
+        assert_eq!(packed_cloud_splat_count(&[2, 0, 0, 0]), None);
     }
 
     #[test]

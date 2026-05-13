@@ -4,6 +4,7 @@ members = [
     "src-tauri",
     "crates/e4epc-formats",
     "crates/e4epc-baker",
+    "crates/e4epc-server",
 ]
 
 [workspace.package]

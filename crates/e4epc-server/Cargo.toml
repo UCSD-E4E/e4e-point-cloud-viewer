@@ -1,0 +1,34 @@
+[package]
+name = "e4epc-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Self-hostable HTTP server: serves the E4E point cloud viewer PWA and the baked .e4epc clouds it renders."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "e4epc-server"
+path = "src/main.rs"
+
+[lib]
+name = "e4epc_server"
+path = "src/lib.rs"
+
+[dependencies]
+e4epc-formats = { path = "../e4epc-formats" }
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "request-id"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"

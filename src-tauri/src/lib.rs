@@ -1,6 +1,7 @@
 mod recent;
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use e4epc_baker::Summary;
 use e4epc_baker::normalize::{
@@ -82,9 +83,15 @@ struct BakeProgress {
     total: usize,
 }
 
+/// The packed bytes of the most recent successful bake, kept so `save_baked_cloud`
+/// can write an `.e4epc` file without re-baking or shipping the buffer back over IPC.
+#[derive(Default)]
+struct LastBake(Mutex<Option<Vec<u8>>>);
+
 #[tauri::command]
 async fn bake_cloud(
     app: AppHandle,
+    state: tauri::State<'_, LastBake>,
     path: PathBuf,
     summary: Summary,
     up_axis: UpAxis,
@@ -120,16 +127,28 @@ async fn bake_cloud(
     .await
     .map_err(|e| e.to_string())??;
 
+    *state.0.lock().map_err(|e| e.to_string())? = Some(bytes.clone());
     Ok(Response::new(bytes))
+}
+
+#[tauri::command]
+fn save_baked_cloud(state: tauri::State<'_, LastBake>, path: PathBuf) -> Result<(), String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    let bytes = guard
+        .as_ref()
+        .ok_or_else(|| "no baked cloud yet — bake one first".to_string())?;
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())
 }
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(LastBake::default())
         .invoke_handler(tauri::generate_handler![
             summarize_cloud,
             compute_normalization,
             bake_cloud,
+            save_baked_cloud,
             get_recent_files,
             add_recent_file,
         ])

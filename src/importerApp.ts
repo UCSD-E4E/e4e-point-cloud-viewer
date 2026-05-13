@@ -5,7 +5,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type { AnaglyphMode } from "./anaglyph.ts";
 import { type BakeProgress, type BakeResult, formatBakeResult } from "./bake.ts";
 import { SplatRenderer } from "./renderer.ts";
@@ -43,6 +43,7 @@ export function mountImporter(): void {
   const bakeBtn = $<HTMLButtonElement>("#bake-btn");
   const resetCameraBtn = $<HTMLButtonElement>("#reset-camera-btn");
   const fullscreenBtn = $<HTMLButtonElement>("#fullscreen-btn");
+  const saveCloudBtn = $<HTMLButtonElement>("#save-cloud-btn");
   const bakeProgressBar = $<HTMLProgressElement>("#bake-progress");
   const bakeOut = $<HTMLPreElement>("#bake-out");
   const splatCanvas = $<HTMLCanvasElement>("#splat-canvas");
@@ -125,6 +126,23 @@ export function mountImporter(): void {
 
   fullscreenBtn.addEventListener("click", () => splatRenderer.toggleFullscreen());
 
+  saveCloudBtn.addEventListener("click", () => {
+    void (async () => {
+      const stem = currentPath?.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, "") ?? "cloud";
+      const target = await save({
+        defaultPath: `${stem}.e4epc`,
+        filters: [{ name: "E4E baked cloud", extensions: ["e4epc"] }],
+      });
+      if (typeof target !== "string") return;
+      try {
+        await invoke("save_baked_cloud", { path: target });
+        bakeOut.textContent = `${bakeOut.textContent ?? ""}\nsaved → ${target}`;
+      } catch (err) {
+        bakeOut.textContent = `error saving: ${String(err)}`;
+      }
+    })();
+  });
+
   document.addEventListener("fullscreenchange", () => {
     fullscreenBtn.textContent = document.fullscreenElement === splatCanvas
       ? "Exit fullscreen"
@@ -177,6 +195,7 @@ export function mountImporter(): void {
         splatRenderer.setCloud(cloud);
         resetCameraBtn.hidden = false;
         fullscreenBtn.hidden = false;
+        saveCloudBtn.hidden = false;
 
         const { min, max } = bboxFrom(cloud.positions);
         const result: BakeResult = {
@@ -221,6 +240,7 @@ export function mountImporter(): void {
     bakeProgressBar.value = 0;
     resetCameraBtn.hidden = true;
     fullscreenBtn.hidden = true;
+    saveCloudBtn.hidden = true;
 
     try {
       currentSummary = await invoke<CloudSummary>("summarize_cloud", { path: picked });
