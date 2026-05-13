@@ -4,106 +4,148 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>E4E Point Cloud Viewer</title>
+    <style>
+      #splat-canvas:fullscreen,
+      #viewer-canvas:fullscreen {
+        width: 100vw;
+        height: 100vh;
+      }
+    </style>
   </head>
   <body>
     <main id="app">
       <h1>E4E Point Cloud Viewer</h1>
-      <p>Pick a <code>.laz</code> file to inspect and normalize.</p>
 
-      <button id="open-btn">Open .laz file…</button>
-      <p id="path-out" data-state="empty">(no file selected)</p>
+      <!-- Desktop (Tauri): import → normalize → bake → view. main.ts mounts this. -->
+      <div id="importer-root">
+        <p>Pick a <code>.laz</code> file to inspect and normalize.</p>
 
-      <section id="recent-section" hidden>
-        <h3>Recent</h3>
-        <ul id="recent-list"></ul>
-      </section>
+        <button id="open-btn">Open .laz file…</button>
+        <p id="path-out" data-state="empty">(no file selected)</p>
 
-      <section id="source-section" hidden>
-        <h2>Source</h2>
-        <pre id="summary-out"></pre>
-      </section>
+        <section id="recent-section" hidden>
+          <h3>Recent</h3>
+          <ul id="recent-list"></ul>
+        </section>
 
-      <section id="orientation-section" hidden>
-        <h2>Orientation</h2>
-        <fieldset>
-          <legend>Source axis that should point up (viewer +Z)</legend>
-          <label><input type="radio" name="up-axis" value="PosX"> +X</label>
-          <label><input type="radio" name="up-axis" value="NegX"> -X</label>
-          <label><input type="radio" name="up-axis" value="PosY"> +Y</label>
-          <label><input type="radio" name="up-axis" value="NegY"> -Y</label>
-          <label><input type="radio" name="up-axis" value="PosZ" checked> +Z</label>
-          <label><input type="radio" name="up-axis" value="NegZ"> -Z</label>
-        </fieldset>
-        <label><input type="checkbox" id="invert-z" /> Invert Z</label>
-      </section>
+        <section id="source-section" hidden>
+          <h2>Source</h2>
+          <pre id="summary-out"></pre>
+        </section>
 
-      <section id="normalized-section" hidden>
-        <h2>After normalization</h2>
-        <pre id="normalized-out"></pre>
-      </section>
+        <section id="orientation-section" hidden>
+          <h2>Orientation</h2>
+          <fieldset>
+            <legend>Source axis that should point up (viewer +Z)</legend>
+            <label><input type="radio" name="up-axis" value="PosX"> +X</label>
+            <label><input type="radio" name="up-axis" value="NegX"> -X</label>
+            <label><input type="radio" name="up-axis" value="PosY"> +Y</label>
+            <label><input type="radio" name="up-axis" value="NegY"> -Y</label>
+            <label><input type="radio" name="up-axis" value="PosZ" checked> +Z</label>
+            <label><input type="radio" name="up-axis" value="NegZ"> -Z</label>
+          </fieldset>
+          <label><input type="checkbox" id="invert-z" /> Invert Z</label>
+        </section>
 
-      <section id="bake-section" hidden>
-        <h2>Bake</h2>
-        <button id="bake-btn">Bake splats</button>
-        <button id="reset-camera-btn" hidden>Reset camera</button>
-        <button id="fullscreen-btn" hidden>Fullscreen</button>
-        <progress id="bake-progress" value="0" max="100"></progress>
-        <pre id="bake-out">(not baked yet)</pre>
+        <section id="normalized-section" hidden>
+          <h2>After normalization</h2>
+          <pre id="normalized-out"></pre>
+        </section>
 
-        <div id="render-controls">
+        <section id="bake-section" hidden>
+          <h2>Bake</h2>
+          <button id="bake-btn">Bake splats</button>
+          <button id="reset-camera-btn" hidden>Reset camera</button>
+          <button id="fullscreen-btn" hidden>Fullscreen</button>
+          <progress id="bake-progress" value="0" max="100"></progress>
+          <pre id="bake-out">(not baked yet)</pre>
+
+          <div id="render-controls">
+            <label>
+              Splat size:
+              <input
+                type="range"
+                id="size-slider"
+                min="0.1"
+                max="5"
+                step="0.1"
+                value="1"
+              />
+              <span id="size-value">×1.0</span>
+            </label>
+            <label>
+              Saturation:
+              <input
+                type="range"
+                id="saturation-slider"
+                min="0"
+                max="1"
+                step="0.05"
+                value="1"
+              />
+              <span id="saturation-value">×1.00</span>
+            </label>
+            <label>
+              Background:
+              <input type="color" id="bg-picker" value="#101216" />
+            </label>
+            <label>
+              <input type="checkbox" id="anaglyph-toggle" />
+              Anaglyph 3D (red/cyan)
+            </label>
+            <label>
+              Anaglyph mode:
+              <select id="anaglyph-mode">
+                <option value="half-color" selected>Half-color (default)</option>
+                <option value="full-color">Full color</option>
+                <option value="dubois">Dubois (three.js default)</option>
+              </select>
+            </label>
+          </div>
+
+          <canvas
+            id="splat-canvas"
+            style="display: block; width: 100%; height: 600px; background: #101216;"
+          ></canvas>
+        </section>
+      </div>
+
+      <!-- Browser (PWA served by e4epc-server): render a baked .e4epc cloud only.
+           main.ts mounts this when not running under Tauri. -->
+      <div id="viewer-root" hidden>
+        <p id="viewer-info">Loading…</p>
+        <p id="viewer-fallback" hidden>
           <label>
-            Splat size:
-            <input
-              type="range"
-              id="size-slider"
-              min="0.1"
-              max="5"
-              step="0.1"
-              value="1"
-            />
-            <span id="size-value">×1.0</span>
+            Open an <code>.e4epc</code> file:
+            <input type="file" id="viewer-file" accept=".e4epc,application/octet-stream" />
           </label>
+        </p>
+
+        <div id="viewer-controls">
           <label>
-            Saturation:
-            <input
-              type="range"
-              id="saturation-slider"
-              min="0"
-              max="1"
-              step="0.05"
-              value="1"
-            />
-            <span id="saturation-value">×1.00</span>
-          </label>
-          <label>
-            Background:
-            <input type="color" id="bg-picker" value="#101216" />
-          </label>
-          <label>
-            <input type="checkbox" id="anaglyph-toggle" />
+            <input type="checkbox" id="viewer-anaglyph" />
             Anaglyph 3D (red/cyan)
           </label>
           <label>
             Anaglyph mode:
-            <select id="anaglyph-mode">
+            <select id="viewer-anaglyph-mode">
               <option value="half-color" selected>Half-color (default)</option>
               <option value="full-color">Full color</option>
               <option value="dubois">Dubois (three.js default)</option>
             </select>
           </label>
+          <label>
+            Splat size:
+            <input type="range" id="viewer-size" min="0.1" max="5" step="0.1" value="1" />
+          </label>
+          <button id="viewer-fullscreen">Fullscreen</button>
         </div>
 
         <canvas
-          id="splat-canvas"
-          style="display: block; width: 100%; height: 600px; background: #101216;"
+          id="viewer-canvas"
+          style="display: block; width: 100%; height: 80vh; background: #101216;"
         ></canvas>
-        <style>
-          #splat-canvas:fullscreen {
-            width: 100vw;
-            height: 100vh;
-          }
-        </style>
-      </section>
+      </div>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

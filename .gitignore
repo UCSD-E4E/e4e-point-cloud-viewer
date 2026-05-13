@@ -258,3 +258,6 @@ src-tauri/gen/
 
 # Vite project-level cache (deps cache lives under node_modules/.vite, already covered).
 .vite/
+
+# Baked splat clouds are generated, never committed (see `npm run fixture`).
+*.e4epc
